@@ -101,6 +101,12 @@ OPERAND_KIND = 0x100
 # Libraries of interest.
 CRYPTO_PACKAGES = ["Ljavax/crypto", "Ljava/security"]
 
+####### TOREMOVE #############
+# Methods of ineterst.
+METHOD_PACKAGES = ["execute([Ljava/lang/Object;)Landroid/os/AsyncTask;", "execute(Ljava/lang/Runnable;)", "Landroid/os/Handler;->dispatchMessage", "Landroid/os/Messenger;", "Landroid/content/SharedPreferences"]
+################################
+
+
 # Confidence levels.
 CONFIDENCE_LEVEL_HIGH = "High"
 CONFIDENCE_LEVEL_MED = "Medium"
@@ -147,6 +153,9 @@ class WorkerGetvalue:
         self.named_object_list = []
         self.initialise_named_object_list()
         
+        ####### TOREMOVE ########
+        self.notes = ""
+        
     def main(self, in_queue, out_queue, process_id):
         """Obtain the file of an APK and initate processing.
         
@@ -180,6 +189,8 @@ class WorkerGetvalue:
             self.num_ble_methods = 0
             self.all_ble_methods = ""
             self.instruction_queue.clear()
+            ####### TOREMOVE ########
+            self.notes = ""
 
             # Get default session.
             sess = get_default_session()
@@ -258,6 +269,7 @@ class WorkerGetvalue:
                                   + "," + str(self.num_ble_methods) 
                                   + "," + str(self.all_ble_methods) 
                                   + "," + str(runtime) 
+                                  + "," + str(self.notes) ### TOREMOVE ###
                                   + "\n")
                 in_queue.task_done()
                 sess.reset()
@@ -727,7 +739,7 @@ class WorkerGetvalue:
 
                         # Find the actual method that is called, from the string in the last operand.
                         invoked_methods = self.find_method(instr_last_operand)
-                        # Search through the called methods, prioritising byte arrays slightly.
+                        # Search through the called methods.
                         for invoke_method in invoked_methods:
                             self.add_to_queue(
                                     [self.trace_called_method, invoke_method, i], QUEUE_PREPEND)
@@ -888,7 +900,7 @@ class WorkerGetvalue:
                             self.add_to_queue(
                                         [self.trace_calling_method, method], QUEUE_PREPEND)
                         # Also find super class.
-                        superclass_methods = self.check_for_interface_class(method)
+                        superclass_methods = self.check_for_superclass(method)
                         for superclass_method in superclass_methods:
                             if self.confidence_level == CONFIDENCE_LEVEL_HIGH:
                                 self.stored_methods.append((self.trace_calling_method, superclass_method))
@@ -898,7 +910,7 @@ class WorkerGetvalue:
                         return
                     # ==============================================================
 
-    def check_for_interface_class(self, method):
+    def check_for_superclass(self, method):
         implementing_methods = []
         method_class = "".join(method.get_class_name().split())
         method_name = "".join(method.get_name().split())
@@ -1125,13 +1137,15 @@ class WorkerGetvalue:
         method_name = "".join(method.get_name().split())
         method_desc = "".join(method.get_descriptor().split())
 
-        # Ideally, we should use dx.find_methods()
-        #   But, for some reason, Androguard doesn't return the value we want.
-        #   So, we implement this using find_classes() as a workaround.
-        all_classes = self.androguard_dx.find_classes(".")
         class_list = []
-        for one_class in all_classes:
-            class_list.append(one_class.get_vm_class())
+        for d in self.androguard_d:
+            all_classes = d.get_classes()            
+            for one_class in all_classes:
+                class_interfaces = one_class.get_interfaces()
+                if len(class_interfaces) < 1:
+                    continue
+                if (method_class in class_interfaces) and (one_class not in class_list):
+                    class_list.append(one_class)
 
         for class_item in class_list:
             try:
@@ -1206,12 +1220,22 @@ class WorkerGetvalue:
         for single_field in self.androguard_dx.get_fields():
             if (single_field.field.get_class_name() + single_field.field.get_name() + single_field.field.get_descriptor()) == (split_source[0]+split_source[1]+split_source[2]):
                 list_fields.append(single_field)
+        
+        ############## TOREMOVE #####################
+        if ("Landroid/os/Message;" in field_full_string) and ("Landroid/os/Message;" not in self.notes):
+            self.notes = self.notes + "Landroid/os/Message field[" + self.confidence_level+ "]\\"
+        ######################################
         return list_fields
 
 
     def crypto_search(self, string_to_search, method):
         """Look for calls to crypto within input string. """
 
+        ####### TOREMOVE #############
+        for method_pkg in METHOD_PACKAGES:
+            if (method_pkg in string_to_search) and (method_pkg not in self.notes):
+                self.notes = self.notes + method_pkg + "[" + self.confidence_level + "]\\"
+        ################################
         for crypto_pkg in CRYPTO_PACKAGES:
             if (crypto_pkg in string_to_search) and ("InvalidParameterException" not in string_to_search):
                 self.found_crypto = True

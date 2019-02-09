@@ -4,10 +4,11 @@ import sys
 import os
 import fnmatch
 
-apk_folder = "../apks3/"
+#apk_folder = "/mnt/sda1/apps_gatt/"
+apk_folder = "../test/"
 extension = "apk"
 
-NUMBER_OF_PROCESSES = 2
+NUMBER_OF_PROCESSES = 3
 
 error_output = "crypto_analysis_getvalue_error.txt"
 fo_err = open(error_output,'a',0)
@@ -30,7 +31,7 @@ def main():
         
     fo_output_file = open(output_file, 'a', 0)
     if file_exists != True:
-        fo_output_file.write("FILENAME,PACKAGE,GETVALUE,CRYPTO_USE,CRYPTO_IN_GETVALUE,CONFIDENCE_LEVEL_GETVALUE,LOCATION_GETVALUE,LOCATION_CRYPTO_GETVALUE,NUM_BLE_METHODS,ALL_BLE_METHODS,TIME_TAKEN_GETVALUE\n")
+        fo_output_file.write("FILENAME,PACKAGE,GETVALUE,CRYPTO_USE,CRYPTO_IN_GETVALUE,CONFIDENCE_LEVEL_GETVALUE,LOCATION_GETVALUE,LOCATION_CRYPTO_GETVALUE,NUM_BLE_METHODS,ALL_BLE_METHODS,TIME_TAKEN_GETVALUE,NOTES\n")
     
     #List all files in app directory.
     matches = []
@@ -114,8 +115,9 @@ def main():
             for p in process_list:
                 if not p.is_alive():
                     process_list.remove(p)
-                    #Create a new process in its place.                    
-                    replacement_worker = Process(target=getvalueMain, args=(process_send_queue,process_receive_queue,num_processes))
+                    #Create a new process in its place.        
+                    worker_gvalue = WorkerGetvalue()
+                    replacement_worker = Process(target=worker_gvalue.main, args=(process_send_queue,process_receive_queue,num_processes))
                     replacement_worker.start()
                     process_list.append(replacement_worker)
                     num_processes+=1
