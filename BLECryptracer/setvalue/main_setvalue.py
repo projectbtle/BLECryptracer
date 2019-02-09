@@ -4,7 +4,8 @@ import sys
 import os
 import fnmatch
 
-apk_folder = "./apks/"
+#apk_folder = "/mnt/sda1/apps_gatt/"
+apk_folder = "../test/"
 extension = "apk"
 
 # Number of (multiprocessing) processes.
@@ -33,7 +34,7 @@ def main():
     fo_output_file = open(output_file, 'a', 0)
     if file_exists != True:
         fo_output_file.write(
-            "FILENAME,PACKAGE,SETVALUE_CALL,CRYPTO_USE,CRYPTO_IN_SETVALUE,CONFIDENCE_LEVEL_SETVALUE,NET_USE,LOCATION_SETVALUE,LOCATION_CRYPTO_SETVALUE,NUM_SETVALUE_METHODS,ALL_SETVALUE_METHODS,TIME_TAKEN_SETVALUE\n")
+            "FILENAME,PACKAGE,SETVALUE_CALL,CRYPTO_USE,CRYPTO_IN_SETVALUE,CONFIDENCE_LEVEL_SETVALUE,NET_USE,LOCATION_SETVALUE,LOCATION_CRYPTO_SETVALUE,NUM_SETVALUE_METHODS,ALL_SETVALUE_METHODS,TIME_TAKEN_SETVALUE,NOTES\n")
 
     # Enumerate all files in app directory.
     matches = []
@@ -120,7 +121,8 @@ def main():
                 if not p.is_alive():
                     process_list.remove(p)
                     # Create a new process in its place.
-                    replacement_worker = Process(target=setvalueMain, args=(
+                    worker_svalue = WorkerSetvalue()
+                    replacement_worker = Process(target=worker_svalue.main, args=(
                         process_send_queue, process_receive_queue, num_processes))
                     replacement_worker.start()
                     process_list.append(replacement_worker)
