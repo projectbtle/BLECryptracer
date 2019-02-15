@@ -92,8 +92,9 @@ Suite of benchmarking apps (DroidBench refactor) for testing the presence of cry
 | Reflection1                 | 1                 | Yes [HIGH]   | True Positive  | Yes       | True Positive   |
 | Reflection2                 | 1                 | Yes [LOW]    | True Positive  | No        | False Negative  |
 | Reflection3                 | 1                 | Yes [LOW]    | True Positive  | No        | False Negative  |
-| Reflection4                 | 1                 | Yes [MEDIUM] | True Positive  | No        | False Negative  |
-| AsyncTask1                  | 1                 | No           | False Negative | Yes       | True Positive   |
+| Reflection4                 | 1                 | No           | False Negative | No        | False Negative  |
+| Threading                                                                                                     |
+| AsyncTask1                  | 1                 | Yes [HIGH]   | True Positive  | Yes       | True Positive   |
 | Executor1                   | 1                 | Yes [HIGH]   | True Positive  | Yes       | True Positive   |
 | JavaThread1                 | 1                 | Yes [HIGH]   | True Positive  | Yes       | True Positive   |
 | JavaThread2                 | 1                 | Yes [HIGH]   | True Positive  | Yes       | True Positive   |
