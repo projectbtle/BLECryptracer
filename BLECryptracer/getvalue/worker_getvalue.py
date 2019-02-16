@@ -101,9 +101,6 @@ OPERAND_KIND = 0x100
 # Libraries of interest.
 CRYPTO_PACKAGES = ["Ljavax/crypto", "Ljava/security"]
 
-####### TOREMOVE #############
-# Methods of ineterst.
-METHOD_PACKAGES = ["execute([Ljava/lang/Object;)Landroid/os/AsyncTask;", "execute(Ljava/lang/Runnable;)", "Landroid/os/Handler;->dispatchMessage", "Landroid/os/Messenger;", "Landroid/content/SharedPreferences"]
 ################################
 
 
@@ -151,10 +148,10 @@ class WorkerGetvalue:
 
         # Initialise object list.
         self.named_object_list = []
+        self.nonnamed_object_list = []
         self.initialise_named_object_list()
-        
-        ####### TOREMOVE ########
-        self.notes = ""
+        self.initialise_nonnamed_object_list()
+
         
     def main(self, in_queue, out_queue, process_id):
         """Obtain the file of an APK and initate processing.
@@ -189,8 +186,6 @@ class WorkerGetvalue:
             self.num_ble_methods = 0
             self.all_ble_methods = ""
             self.instruction_queue.clear()
-            ####### TOREMOVE ########
-            self.notes = ""
 
             # Get default session.
             sess = get_default_session()
@@ -269,7 +264,6 @@ class WorkerGetvalue:
                                   + "," + str(self.num_ble_methods) 
                                   + "," + str(self.all_ble_methods) 
                                   + "," + str(runtime) 
-                                  + "," + str(self.notes) ### TOREMOVE ###
                                   + "\n")
                 in_queue.task_done()
                 sess.reset()
@@ -723,6 +717,7 @@ class WorkerGetvalue:
                             instr_operands)-1][2]
 
                         # If the value is being added to a named object (e.g., Bundle or Intent)
+                        named_obj_use = False
                         for named_obj_idx, named_object in enumerate(self.named_object_list):
                             for named_item in named_object[1]:
                                 full_name_string = named_object[0] + "->" + named_item
@@ -736,7 +731,18 @@ class WorkerGetvalue:
                                             method, idx, named_item_string_register_num)
                                     if named_string:
                                         self.find_get_named_item(named_string, named_obj_idx)
-
+                                        named_obj_use = True
+                                        
+                        
+                        # If the invoked method is AsyncTask, then we would need to find the relevant doInBackground.
+                        for nonnamed_object in self.nonnamed_object_list:
+                            if nonnamed_object[0] in instr_last_operand:
+                                associated_method_instr = instr_last_operand.replace(nonnamed_object[0], nonnamed_object[1])
+                                associated_methods = self.find_associated_method(associated_method_instr)
+                                for associated_method in associated_methods:
+                                    self.add_to_queue(
+                                            [self.trace_called_method, associated_method, i], QUEUE_PREPEND)
+                                
                         # Find the actual method that is called, from the string in the last operand.
                         invoked_methods = self.find_method(instr_last_operand)
                         # Search through the called methods.
@@ -751,7 +757,8 @@ class WorkerGetvalue:
                             else:
                                 instance_register_num = instr_operands[0][1]
                                 if self.confidence_level == CONFIDENCE_LEVEL_HIGH:
-                                    self.stored_methods.append((self.trace_forward_thorough, method, idx+1, instance_register_num))
+                                    if (self.trace_forward_thorough, method, idx+1, instance_register_num) not in self.stored_methods:
+                                        self.stored_methods.append((self.trace_forward_thorough, method, idx+1, instance_register_num))
                                 else:
                                     self.add_to_queue([self.trace_forward_thorough, method, idx+1, instance_register_num], QUEUE_PREPEND)               
 
@@ -895,7 +902,8 @@ class WorkerGetvalue:
                         return_reg_type = self.identify_register_type(num_local_registers, register_num)
                         if ((return_reg_type[0] == "p") and 
                             (self.confidence_level == CONFIDENCE_LEVEL_HIGH)):
-                            self.stored_methods.append((self.trace_calling_method, method))
+                            if (self.trace_calling_method, method) not in self.stored_methods:
+                                self.stored_methods.append((self.trace_calling_method, method))
                         else:
                             self.add_to_queue(
                                         [self.trace_calling_method, method], QUEUE_PREPEND)
@@ -903,7 +911,8 @@ class WorkerGetvalue:
                         superclass_methods = self.check_for_superclass(method)
                         for superclass_method in superclass_methods:
                             if self.confidence_level == CONFIDENCE_LEVEL_HIGH:
-                                self.stored_methods.append((self.trace_calling_method, superclass_method))
+                                if (self.trace_calling_method, superclass_method) not in self.stored_methods:
+                                    self.stored_methods.append((self.trace_calling_method, superclass_method))
                             else:
                                 self.add_to_queue(
                                         [self.trace_calling_method, superclass_method], QUEUE_APPEND)
@@ -1114,8 +1123,9 @@ class WorkerGetvalue:
                 implementing_methods = self.find_implementing_methods(method)
                 for implementing_method in implementing_methods:
                     if self.confidence_level == CONFIDENCE_LEVEL_HIGH:
-                        self.stored_methods.append(
-                            (self.trace_called_method, implementing_method, parameter_register_num))
+                        if (self.trace_called_method, implementing_method, parameter_register_num) not in self.stored_methods:
+                            self.stored_methods.append(
+                                (self.trace_called_method, implementing_method, parameter_register_num))
                     else:
                         self.add_to_queue([self.trace_called_method, implementing_method,
                                     parameter_register_num], QUEUE_APPEND)
@@ -1189,6 +1199,17 @@ class WorkerGetvalue:
         return
 
 
+    def find_associated_method(self, associated_method_operand):
+        split_operand = associated_method_operand.split("->")
+        target_class = split_operand[0].strip()
+        target_name = split_operand[1].strip()
+        associated_methods = []
+        dx_associated_methods = self.androguard_dx.find_methods(re.escape(target_class),re.escape(target_name),".")
+        for dx_associated_method in dx_associated_methods:
+            associated_methods.append(dx_associated_method.get_method())
+                    
+        return associated_methods
+    
     def find_method(self, method_operand):
         """Given a string (containing a reference to a method), find the corresponding method. """
 
@@ -1196,8 +1217,7 @@ class WorkerGetvalue:
         target_class = split_operand[0].strip()
         target_name = split_operand[1].split("(")[0].strip()
         target_desc = "(" + split_operand[1].split("(")[1].strip()
-        target_method = "".join(method_operand.split())
-
+        
         list_methods = []
         dx_find_methods = self.androguard_dx.find_methods(
             re.escape(target_class), re.escape(target_name), re.escape(target_desc))
@@ -1205,9 +1225,6 @@ class WorkerGetvalue:
         for dx_find_method in dx_find_methods:
             dx_method = dx_find_method.get_method()
             list_methods.append(dx_method)
-
-        if len(list_methods) > 1:
-            pass
 
         return list_methods
 
@@ -1220,22 +1237,13 @@ class WorkerGetvalue:
         for single_field in self.androguard_dx.get_fields():
             if (single_field.field.get_class_name() + single_field.field.get_name() + single_field.field.get_descriptor()) == (split_source[0]+split_source[1]+split_source[2]):
                 list_fields.append(single_field)
-        
-        ############## TOREMOVE #####################
-        if ("Landroid/os/Message;" in field_full_string) and ("Landroid/os/Message;" not in self.notes):
-            self.notes = self.notes + "Landroid/os/Message field[" + self.confidence_level+ "]\\"
-        ######################################
+
         return list_fields
 
 
     def crypto_search(self, string_to_search, method):
         """Look for calls to crypto within input string. """
 
-        ####### TOREMOVE #############
-        for method_pkg in METHOD_PACKAGES:
-            if (method_pkg in string_to_search) and (method_pkg not in self.notes):
-                self.notes = self.notes + method_pkg + "[" + self.confidence_level + "]\\"
-        ################################
         for crypto_pkg in CRYPTO_PACKAGES:
             if (crypto_pkg in string_to_search) and ("InvalidParameterException" not in string_to_search):
                 self.found_crypto = True
@@ -1372,3 +1380,9 @@ class WorkerGetvalue:
                                         ]
                                     ]
                                 ]
+                                
+    def initialise_nonnamed_object_list(self):
+        self.nonnamed_object_list = [
+                                        ["execute([Ljava/lang/Object;)Landroid/os/AsyncTask;", "doInBackground"],
+                                        ["execute(Ljava/lang/Runnable;)", "doInBackground"]
+                                    ]
