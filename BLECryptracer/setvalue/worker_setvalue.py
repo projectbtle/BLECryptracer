@@ -4,6 +4,7 @@ import fnmatch
 import re
 import collections
 import timeit
+import itertools
 from time import sleep
 from multiprocessing import JoinableQueue
 from androguard.misc import *
@@ -108,7 +109,7 @@ CRYPTO_PACKAGES = ["Ljavax/crypto", "Ljava/security"]
 NET_PACKAGES = ["Ljava/net/URLConnection;",
                 "Ljava/net/HttpURLConnection;", 
                 "Ljavax/net/ssl/HttpsURLConnection;"]
-
+#################################
 
 # Timing-related.
 MAX_RUNTIME = 1800
@@ -133,6 +134,7 @@ class WorkerSetvalue():
         self.stored_methods = []  # Methods to try at Confidence Level "Medium"
         self.source_methods = []  # Methods to try at Confidence Level "Low"
         self.all_methods = []
+        self.stored_instructions = []
 
         # Stats.
         self.num_ble_methods = 0
@@ -142,6 +144,12 @@ class WorkerSetvalue():
         
         # Mainly used to prevent excessive recursion.
         self.instruction_queue = collections.deque()
+        
+        # Initialise object list.
+        self.named_object_list = []
+        self.nonnamed_object_list = []
+        self.initialise_named_object_list()
+        self.initialise_nonnamed_object_list()
         
     def main(self, in_queue, out_queue, process_id):
         """Obtain the file of an APK and initate processing.
@@ -172,6 +180,7 @@ class WorkerSetvalue():
             self.stored_methods = []
             self.source_methods = []
             self.all_methods = []
+            self.stored_instructions = []
             self.confidence_level = CONFIDENCE_LEVEL_HIGH
             self.num_ble_methods = 0
             self.all_ble_methods = ""
@@ -441,9 +450,11 @@ class WorkerSetvalue():
                 return
             if self.time_check() == True:
                 return
-            method_tuple = self.stored_methods.pop()
-            self.add_to_queue([self.decide_trace_route, method_tuple[0],
-                        method_tuple[1], method_tuple[2]], QUEUE_APPEND)
+            method_tuples = self.stored_methods.pop()
+            tuples = []
+            for method_tuple in method_tuples:
+                tuples.append(method_tuple)
+            self.add_to_queue(tuples, QUEUE_APPEND)
             self.instruction_scheduler()
 
         if self.found_crypto == True:
@@ -642,14 +653,15 @@ class WorkerSetvalue():
                 continue
 
             if (end_index != 0) and (idx == end_index):
-                #!#print "End of branch or search list reached"
+                # End of branch or search list reached.
                 return
 
+            instr_op_value = instruction.get_op_value()
             operands = instruction.get_operands(0)
+                
             # Check if the register of interest is present among the operands.
             for i in range(0, len(operands)):
-                if (operands[i][0] == OPERAND_REGISTER) and (operands[i][1] == register_id):
-                    instr_op_value = instruction.get_op_value()
+                if (operands[i][0] == OPERAND_REGISTER) and (operands[i][1] == register_id):                    
                     # Test for different ways in which the register could have been assigned a value.
                     #  The checks on i are to ensure that the register of interest is in the correct parameter position.
                     # ==============================================================
@@ -690,8 +702,9 @@ class WorkerSetvalue():
                                 input_register_name = self.identify_register_type(
                                     num_local_registers, input_register_num)
                                 if self.confidence_level == CONFIDENCE_LEVEL_HIGH:
-                                    self.stored_methods.append(
-                                        (method, num_instructions-idx-1, input_register_name))
+                                    if (self.decide_trace_route, method, num_instructions-idx-1, input_register_name) not in self.stored_methods:
+                                        self.stored_methods.append(
+                                        (self.decide_trace_route, method, num_instructions-idx-1, input_register_name))
                                 else:
                                     self.add_to_queue([self.decide_trace_route, method,
                                                 num_instructions-idx-1, input_register_name], QUEUE_APPEND)
@@ -860,23 +873,22 @@ class WorkerSetvalue():
                                 prev_instr.get_output(), method)
                             if isCrypto == True:
                                 return
-
-                            # If value is obtained from Intent;->get..Extra:
-                            if (("Landroid/content/Intent;" in str(prev_operands[len(prev_operands)-1])) and 
-                                    ("get" in str(prev_operands[len(prev_operands)-1])) and 
-                                    ("Extra" in str(prev_operands[len(prev_operands)-1])) and 
-                                    ("Extras" not in str(prev_operands[len(prev_operands)-1])) and 
-                                    (len(prev_operands) >= 2)):
-                                intent_extra_register_num = prev_operands[1][1]
-                                intent_extra_register = self.identify_register_type(
-                                    num_local_registers, intent_extra_register_num)
-                                intent_extra_string = None
-                                if intent_extra_register[0] == "v":
-                                    intent_extra_string = self.intent_string_search_internal(
-                                        method, num_instructions-idx-2, intent_extra_register_num)
-                                if intent_extra_string:
-                                    self.find_put_extra(intent_extra_string)
-
+                            
+                            # If the value is from a named object.
+                            for named_obj_idx, named_object in enumerate(self.named_object_list):
+                                for named_item in named_object[2]:
+                                    full_name_string = named_object[0] + "->" + named_item
+                                    if (full_name_string in str(prev_operands[len(prev_operands)-1])):
+                                        named_item_string_register_num = prev_operands[1][1]
+                                        named_item_string_register = self.identify_register_type(
+                                            num_local_registers, named_item_string_register_num)
+                                        named_string = None
+                                        if named_item_string_register[0] == "v":
+                                            named_string = self.string_search_internal(
+                                                method, num_instructions-idx-2, named_item_string_register_num)
+                                        if named_string:
+                                            self.find_get_named_item(named_string, named_obj_idx)
+                            
                             # Trace the invoked method as well, if it's not an external method.
                             prev_last_operand = prev_operands[len(
                                 prev_operands)-1][2]
@@ -890,6 +902,31 @@ class WorkerSetvalue():
                                 except:
                                     # Probably an external method.
                                     pass
+                                # Also see if any other classes extend this class.
+                                if prev_op_value not in INVOKE_STATIC_OPCODES:
+                                    prev_op_register = prev_operands[0][1]
+                                    prev_register_name = self.identify_register_type(
+                                        num_local_registers, prev_op_register)
+                                    prev_op_instance = ""
+                                    if prev_register_name[0] == "v":
+                                        prev_op_instance = self.find_first_instance(
+                                            method, num_instructions-idx-2, prev_op_register)
+                                    implementing_methods = self.find_implementing_methods(prev_method)
+                                    superclass_methods = self.check_for_superclass_methods(prev_method)
+                                    extending_methods = []
+                                    extending_methods = itertools.chain(implementing_methods, superclass_methods)
+                                    if (extending_methods != []) and (extending_methods != None):
+                                        for extending_method in extending_methods:
+                                            # See if the class is actually instantiated (within the method).  
+                                            if prev_op_instance != extending_method.get_class_name():
+                                                continue
+                                            if self.confidence_level == CONFIDENCE_LEVEL_HIGH:
+                                                if (self.trace_return, extending_method) not in self.stored_methods:
+                                                    self.stored_methods.append((self.trace_return, extending_method))
+                                            else:
+                                                self.add_to_queue(
+                                                        [self.trace_return, extending_method], QUEUE_APPEND)
+                                    
 
                             # Backtrace the function arguments as well.
                             # This is to handle cases where the immediate preceding invoked method
@@ -904,7 +941,7 @@ class WorkerSetvalue():
                                         ([self.decide_trace_route, method, num_instructions-idx-2, op_register_name] not in self.all_methods)):
                                     if self.confidence_level == CONFIDENCE_LEVEL_HIGH:
                                         self.stored_methods.append(
-                                            (method, num_instructions-idx-2, op_register_name))
+                                            (self.decide_trace_route, method, num_instructions-idx-2, op_register_name))
                                     else:
                                         self.add_to_queue(
                                             [self.decide_trace_route, method, num_instructions-idx-2, op_register_name], QUEUE_APPEND)
@@ -924,7 +961,56 @@ class WorkerSetvalue():
                         return
 
 
-    def intent_string_search_internal(self, method, index, register_num):
+    def find_first_instance(self, method, index, op_register):
+        instructions = method.get_instructions()
+        list_instructions = list(instructions)
+        num_instructions = len(list_instructions)
+        reversed_instructions = reversed(list_instructions)
+        start_idx = num_instructions - index
+        for idx, instruction in enumerate(reversed_instructions):
+            if self.found_crypto == True:
+                return
+            if self.time_check() == True:
+                return
+            if idx < start_idx:
+                continue
+                
+            op_code = instruction.get_op_value()
+            operands = instruction.get_operands()
+            for i in range(0, len(operands)):
+                if (operands[i][0] == OPERAND_REGISTER) and (operands[i][1] == op_register):
+                    if (op_code in NEW_INSTANCE_OPCODES):
+                        return operands[1][2]
+                    elif (op_code in MOVE_RESULT_OPCODES):
+                        prev_instr = reversed_instructions.next()
+                        prev_opcode = prev_instr.get_op_value()
+                                                instance_reg = (prev_instr.get_operands())[0][1]
+                        instance_reg_name = self.identify_register_type(num_local_registers, instance_reg)
+                        if instance_reg_name[0] == "p":
+                            return ""
+                        if prev_opcode in INVOKE_OPCODES:
+                            if ("Ljava/lang/Class;->newInstance") in prev_instr.get_output():                                
+                                return self.find_first_instance(method, num_instructions-idx-2, instance_reg)
+                            elif ("Ljava/lang/Class;->forName") in prev_instr.get_output():
+                                const_instr = reversed_instructions.next()
+                                if const_instr.get_op_value() in CONST_DECL_OPCODES:
+                                    const_operands = const_instr.get_operands()
+                                    return self.class_string_to_smali(const_operands[1][2])
+        return ""
+     
+    def class_string_to_smali(self, string):
+        new_string = string.replace("u'","").replace("'","")
+        smalistring = "L"
+        string_split = new_string.split(".")
+        for idx, element in enumerate(string_split):
+            if idx > 0:
+                smalistring = smalistring + "/" + element
+            else:
+                smalistring = smalistring + element
+        smalistring = smalistring + ";"
+        return smalistring
+        
+    def string_search_internal(self, method, index, register_num):
         instructions = method.get_instructions()
         list_instructions = list(instructions)
         num_instructions = len(list_instructions)
@@ -947,39 +1033,70 @@ class WorkerSetvalue():
                         return operands[1][2]
 
 
-    def find_put_extra(self, intent_extra_string):
-        intent_put_methods = self.androguard_dx.find_methods(
-            "Landroid/content/Intent;", "putExtra", ".")
-        search_term = "Landroid/content/Intent;->putExtra"
-        putextra_string_operand = 1
-        intent_methods = []
-        for intent_put_method in intent_put_methods:
-            for element in intent_put_method.get_xref_from():
-                intent_methods.append(element[1])
-        intent_put_methods = None
-        for intent_method in intent_methods:
+    def find_get_named_item(self, search_named_string, named_obj_idx):
+        put_named_types = self.named_object_list[named_obj_idx][1]
+        put_prefix = self.named_object_list[named_obj_idx][0]
+        for put_named_type in put_named_types:
+            put_methods = self.androguard_dx.find_methods(
+                put_prefix, put_named_type, ".")
+            search_term = put_prefix + "->" + put_named_type
+            named_methods = []
+            for put_method in put_methods:
+                for element in put_method.get_xref_from():
+                    named_methods.append(element[1])
+            put_methods = None
+            for named_method in named_methods:
+                id_reg = self.identify_register(
+                    named_method, INVOKE_OPCODES, search_term, 1)
+                if id_reg != []:
+                    for individual_method in id_reg:
+                        register_type = individual_method[0]
+                        index = individual_method[1]
+                        named_string = None
+                        if register_type[0] == "v":
+                            named_string = self.string_search_internal(
+                                named_method, index, int(register_type[1:]))
+                        if named_string == search_named_string:
+                            content_operand = 2
+                            id_reg2 = self.identify_register(
+                                named_method, INVOKE_OPCODES, search_term, content_operand)
+                            if id_reg2 != []:
+                                for individual_method2 in id_reg2:
+                                    content_register_type = individual_method2[0]
+                                    index2 = individual_method2[1]
+                                    self.add_to_queue([self.decide_trace_route, named_method,
+                                                index2, content_register_type], QUEUE_PREPEND)
+                                            
+    def find_associated_method_call(self, associated_method_operand, operand_idx):
+        # Because execute doesn't actually have a method definition, we have to go about this differently.
+        split_operand = associated_method_operand.split("->")
+        target_class = split_operand[0].strip()
+        target_name = split_operand[1].split("(")[0].strip()
+        target_desc = "(" + split_operand[1].split("(")[1].strip()
+        associated_methods = []
+        
+        dx_associated_methods = self.androguard_dx.find_methods(re.escape(target_class), 
+                                                                    re.escape(target_name), 
+                                                                    re.escape(target_desc))
+        calling_methods = []
+        for dx_associated_method in dx_associated_methods:
+            for element in dx_associated_method.get_xref_from():
+                if element[1] not in calling_methods:
+                    calling_methods.append(element[1])
+        
+        for path_idx, method in enumerate(calling_methods):
             id_reg = self.identify_register(
-                intent_method, INVOKE_OPCODES, search_term, putextra_string_operand)
-            if id_reg != []:
+                method, INVOKE_OPCODES, associated_method_operand, operand_idx)
+            if id_reg == []:
+                continue
+            else:
                 for individual_method in id_reg:
-                    intent_register_type = individual_method[0]
+                    register_type = individual_method[0]
                     index = individual_method[1]
-                    intent_string = None
-                    if intent_register_type[0] == "v":
-                        intent_string = self.intent_string_search_internal(
-                            intent_method, index, int(intent_register_type[1:]))
-                    if intent_string == intent_extra_string:
-                        intent_content_operand = 2
-                        id_reg2 = self.identify_register(
-                            intent_method, INVOKE_OPCODES, search_term, intent_content_operand)
-                        if id_reg2 != []:
-                            for individual_method in id_reg2:
-                                intent_content_register_type = individual_method[0]
-                                index = individual_method[1]
-                                self.add_to_queue([self.decide_trace_route, intent_method,
-                                            index, intent_content_register_type], QUEUE_PREPEND)
-
-
+                    self.add_to_queue([self.decide_trace_route, method,
+                                index, register_type], QUEUE_PREPEND)
+                    self.instruction_scheduler()
+        
     def trace_external(self, method, register_name):
         argument_register_name = ""
         out_method = None
@@ -991,6 +1108,26 @@ class WorkerSetvalue():
         method_name = "".join(method.get_name().split())
         method_desc = "".join(method.get_descriptor().split())
 
+        # If the methods are to do with AsyncTask (for example), then searching for calls to doInBackground won't work.
+        is_associated_method = False
+        # Get superclass, so that we can be sure of the method.
+        superclass_methods = self.check_for_superclass_methods(method)
+        superclass_name = ""
+        if len(superclass_methods) > 0:
+            superclass_name = superclass_methods[0].get_class_name()
+            for nonnamed_object in self.nonnamed_object_list:
+                for nonnamed_method in nonnamed_object[1]:
+                    if ((nonnamed_method in method_name) and 
+                        ((nonnamed_object[0] == superclass_name) 
+                            or (nonnamed_object[0] == method_class))):
+                        is_associated_method = True
+                        for item in nonnamed_object[2]:
+                            self.find_associated_method_call(method_class + "->" + item, nonnamed_object[3])
+        # Avoid incorrect searches of superclasses when the method is AsyncTask.
+        if is_associated_method == True:
+            return
+            
+        # Normal methods.
         all_methods = self.androguard_dx.find_methods(re.escape(method.get_class_name()), re.escape(
             method.get_name()), re.escape(method.get_descriptor()))
         out_methods = []
@@ -1014,9 +1151,7 @@ class WorkerSetvalue():
                     self.add_to_queue([self.decide_trace_route, out_method,
                                 index, argument_register_name], QUEUE_APPEND)
 
-        if out_methods != []:
-            return
-
+            
         # If the method is not an abstract method,
         #  then check if its class implements an interface class or extends an abstract class.
         # First see if the method is an external method.
@@ -1029,16 +1164,103 @@ class WorkerSetvalue():
             return
 
         implementing_methods = self.check_for_interface_class(method)
-        if(implementing_methods != []):
-            for implementing_method in implementing_methods:
-                if self.confidence_level == CONFIDENCE_LEVEL_HIGH:
-                    self.stored_methods.append((implementing_method, 1, register_name))
-                else:
-                    self.add_to_queue([self.decide_trace_route,
-                                implementing_method, 1, register_name], QUEUE_APPEND)
+        for implementing_method in implementing_methods:
+            if self.confidence_level == CONFIDENCE_LEVEL_HIGH:
+                if (self.decide_trace_route, implementing_method, 1, register_name) not in self.stored_methods:
+                    self.stored_methods.append((self.decide_trace_route, implementing_method, 1, register_name))
+            else:
+                self.add_to_queue([self.decide_trace_route,
+                            implementing_method, 1, register_name], QUEUE_APPEND)
+                                
+        for superclass_method in superclass_methods:
+            if self.confidence_level == CONFIDENCE_LEVEL_HIGH:
+                if (self.decide_trace_route, superclass_method, 1, register_name) not in self.stored_methods:
+                    self.stored_methods.append((self.decide_trace_route, superclass_method, 1, register_name))
+            else:
+                self.add_to_queue([self.decide_trace_route,
+                            superclass_method, 1, register_name], QUEUE_APPEND)
+        
         return
 
+    def check_for_superclass_methods(self, method):
+        implementing_methods = []
+        method_class = "".join(method.get_class_name().split())
+        method_name = "".join(method.get_name().split())
+        method_desc = "".join(method.get_descriptor().split())
+    
+        try:
+            method.get_instructions()
+        except:
+            return implementing_methods
+        all_classes = self.androguard_dx.find_classes(re.escape(method_class))
+        class_list = []
+        for one_class in all_classes:
+            class_list.append(one_class.get_vm_class())
 
+        superclass_list = []
+        for found_class in class_list:
+            superclass_name = None
+            try:
+                superclass_name = found_class.get_superclassname()
+            except:
+                superclass_name = found_class.get_name()
+            if (superclass_name != method.get_class_name()) and (superclass_name != None):
+                superclasses = self.androguard_dx.find_classes(re.escape(superclass_name))
+                for superclass in superclasses:
+                    superclass_list.append(superclass)
+        
+        for superclass_item in superclass_list:
+            superclass_method_objs = superclass_item.get_methods()
+        
+            for superclass_method_obj in superclass_method_objs:
+                superclass_method = superclass_method_obj.get_method()
+                superclass_method_name = "".join(superclass_method.get_name().split())
+                superclass_method_desc = "".join(superclass_method.get_descriptor().split())
+                if (superclass_method_name == method_name) and (superclass_method_desc == method_desc):
+                    implementing_methods.append(superclass_method)
+
+        return implementing_methods
+        
+    def find_implementing_methods(self, method):
+        """ Return methods implementing an abstract method. """
+        
+        implementing_methods = []
+        method_class = "".join(method.get_class_name().split())
+        method_name = "".join(method.get_name().split())
+        method_desc = "".join(method.get_descriptor().split())
+
+        class_list = []
+        for d in self.androguard_d:
+            all_classes = d.get_classes()            
+            for one_class in all_classes:
+                class_interfaces = one_class.get_interfaces()
+                if len(class_interfaces) < 1:
+                    continue
+                if (method_class in class_interfaces) and (one_class not in class_list):
+                    class_list.append(one_class)
+
+        for class_item in class_list:
+            try:
+                all_methods = class_item.get_methods()
+                for one_method in all_methods:
+                    try:
+                        one_method.get_instructions()
+                    except:
+                        # Probably external method.
+                        # This branch should never be reached.
+                        continue
+                    method_access_flags = one_method.get_access_flags()
+                    if (ACCESS_FLAG_ABSTRACT & method_access_flags) == ACCESS_FLAG_ABSTRACT:
+                        continue
+                    else:
+                        found_method_name = "".join(one_method.get_name().split())
+                        found_method_desc = "".join(one_method.get_descriptor().split())
+                        if (found_method_name == method_name) and (found_method_desc == method_desc):
+                            implementing_methods.append(one_method)
+            except:
+                continue
+        return implementing_methods
+        
     def check_for_interface_class(self, method):
         implementing_methods = []
         method_class = "".join(method.get_class_name().split())
@@ -1253,7 +1475,7 @@ class WorkerSetvalue():
 
     def crypto_search(self, string_to_search, method):
         """Look for calls to crypto within input string. """
-        
+
         for crypto_pkg in CRYPTO_PACKAGES:
             if (crypto_pkg in string_to_search) and ("InvalidParameterException" not in string_to_search):
                 self.found_crypto = True
@@ -1278,3 +1500,130 @@ class WorkerSetvalue():
             self.confidence_level = "Timeout"
             return True
         return False
+        
+        
+    def initialise_named_object_list(self):
+        self.named_object_list = [
+                                    [   "Landroid/content/Intent;",
+                                        [
+                                            "putExtra"
+                                        ], 
+                                        [
+                                            "getBooleanArrayExtra"
+                                           , "getBooleanExtra"
+                                           , "getBundleExtra"
+                                           , "getByteArrayExtra"
+                                           , "getByteExtra"
+                                           , "getCharArrayExtra"
+                                           , "getCharExtra"
+                                           , "getCharSequenceArrayExtra"
+                                           , "getCharSequenceArrayListExtra"
+                                           , "getCharSequenceExtra"
+                                           , "getDoubleArrayExtra"
+                                           , "getDoubleExtra"
+                                           , "getFloatArrayExtra"
+                                           , "getFloatExtra"
+                                           , "getIntArrayExtra"
+                                           , "getIntExtra"
+                                           , "getIntegerArrayListExtra"
+                                           , "getLongArrayExtra"
+                                           , "getLongExtra"
+                                           , "getParcelableArrayExtra"
+                                           , "getParcelableArrayListExtra"
+                                           , "getParcelableExtra"
+                                           , "getSerializableExtra"
+                                           , "getShortArrayExtra"
+                                           , "getShortExtra"
+                                           , "getStringArrayExtra"
+                                           , "getStringArrayListExtra"
+                                           , "getStringExtra"
+                                        ]
+                                    ],
+                                    [   "Landroid/os/Bundle;", 
+                                        [
+                                            "putBinder"
+                                            ,"putBundle"
+                                            ,"putByte"
+                                            ,"putByteArray"
+                                            ,"putChar"
+                                            ,"putCharArray"
+                                            ,"putCharSequence"
+                                            ,"putCharSequenceArray"
+                                            ,"putCharSequenceArrayList"
+                                            ,"putFloat"
+                                            ,"putFloatArray"
+                                            ,"putIntegerArrayList"
+                                            ,"putParcelable"
+                                            ,"putParcelableArray"
+                                            ,"putParcelableArrayList"
+                                            ,"putSerializable"
+                                            ,"putShort"
+                                            ,"putShortArray"
+                                            ,"putSize"
+                                            ,"putSizeF"
+                                            ,"putSparseParcelableArray"
+                                            ,"putStringArrayList"
+                                            ,"putBoolean"
+                                            ,"putBooleanArray"
+                                            ,"putDouble"
+                                            ,"putDoubleArray"
+                                            ,"putInt"
+                                            ,"putIntArray"
+                                            ,"putLong"
+                                            ,"putLongArray"
+                                            ,"putString"
+                                            ,"putStringArray"
+                                        ],
+                                        [
+                                            "getBinder"
+                                            ,"getBundle"
+                                            ,"getByte"
+                                            ,"getByteArray"
+                                            ,"getChar"
+                                            ,"getCharArray"
+                                            ,"getCharSequence"
+                                            ,"getCharSequence"
+                                            ,"getCharSequenceArray"
+                                            ,"getCharSequenceArrayList"
+                                            ,"getFloat"
+                                            ,"getFloatArray"
+                                            ,"getIntegerArrayList"
+                                            ,"getParcelable"
+                                            ,"getParcelableArray"
+                                            ,"getParcelableArrayList"
+                                            ,"getSerializable"
+                                            ,"getShort"
+                                            ,"getShortArray"
+                                            ,"getSize"
+                                            ,"getSizeF"
+                                            ,"getSparseParcelableArray"
+                                            ,"getStringArrayList"
+                                            ,"get"
+                                            ,"getBoolean"
+                                            ,"getBooleanArray"
+                                            ,"getDouble"
+                                            ,"getDoubleArray"
+                                            ,"getInt"
+                                            ,"getIntArray"
+                                            ,"getLong"
+                                            ,"getLongArray"
+                                            ,"getString"
+                                            ,"getStringArray"
+                                        ]
+                                    ]
+                                ]
+                                
+    def initialise_nonnamed_object_list(self):
+        self.nonnamed_object_list = [
+                                        [
+                                            "Landroid/os/AsyncTask;",
+                                            [
+                                                "doInBackground"
+                                            ], 
+                                            [
+                                                "execute([Ljava/lang/Object;)Landroid/os/AsyncTask;", 
+                                                "execute(Ljava/lang/Runnable;)"
+                                            ],
+                                            1,
+                                        ],
+                                    ]
