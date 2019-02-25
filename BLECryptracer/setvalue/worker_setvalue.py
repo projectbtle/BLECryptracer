@@ -963,6 +963,8 @@ class WorkerSetvalue():
 
     def find_first_instance(self, method, index, op_register):
         instructions = method.get_instructions()
+        (num_registers, num_local_registers,
+         num_param_registers) = self.find_number_of_registers(method) 
         list_instructions = list(instructions)
         num_instructions = len(list_instructions)
         reversed_instructions = reversed(list_instructions)
@@ -984,7 +986,7 @@ class WorkerSetvalue():
                     elif (op_code in MOVE_RESULT_OPCODES):
                         prev_instr = reversed_instructions.next()
                         prev_opcode = prev_instr.get_op_value()
-                                                instance_reg = (prev_instr.get_operands())[0][1]
+                        instance_reg = (prev_instr.get_operands())[0][1]
                         instance_reg_name = self.identify_register_type(num_local_registers, instance_reg)
                         if instance_reg_name[0] == "p":
                             return ""
