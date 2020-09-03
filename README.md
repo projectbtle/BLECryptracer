@@ -9,4 +9,4 @@ This repository consists of three folders:
 
 An additional folder "Test Dataset" contains lists of the (SHA256 hashes of) applications used in the first phase of our research. It also contains the SHA256 hashes of applications that were identified as having cryptographically-processed BLE data with High confidence.
 
-Further details about the code, as well as information about BLE data security in the presence of co-located Android apps, can be found in our [paper](https://arxiv.org/abs/1808.03778) (to be presented at the 28th USENIX Security Symposium, August 2019).
+Further details about the code, as well as information about BLE data security in the presence of co-located Android apps, can be found in our [paper](https://www.usenix.org/system/files/sec19-sivakumaran_0.pdf) (presented at the 28th USENIX Security Symposium, August 2019).
